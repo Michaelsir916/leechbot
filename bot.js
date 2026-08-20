@@ -31,6 +31,7 @@ function mainMenu() {
     [Markup.button.callback("⚙️ Configure Filters", "menu_filters")],
     [Markup.button.callback("📡 Set Source Channel", "set_source"), Markup.button.callback("🎯 Set Target", "set_target")],
     [Markup.button.callback("🚦 Speed: " + cfg.speed, "menu_speed"), Markup.button.callback("📏 Max Size", "set_maxsize")],
+    [Markup.button.callback("🌙 Daily Limit: " + (cfg.dailyLimit ? cfg.dailyLimit : "off"), "set_dailylimit")],
     [Markup.button.callback("👁 Preview", "preview")],
     [Markup.button.callback(`${statusEmoji} Status`, "status")],
     [Markup.button.callback("🚀 Start Transfer", "start_transfer")],
@@ -84,6 +85,18 @@ bot.start((ctx) => {
 
 bot.command("menu", (ctx) => ctx.reply("📋 Main Menu", mainMenu()));
 
+bot.command("whereami", async (ctx) => {
+  const cfg = state.load();
+  await ctx.reply(
+    `📍 *Where am I*\n\n` +
+      `Status: ${cfg.status}\n` +
+      `Last message ID processed: ${cfg.lastProcessedMsgId || "none yet"}\n` +
+      `Today's sent count: ${cfg.dailyCount}${cfg.dailyLimit ? " / " + cfg.dailyLimit : ""}\n\n` +
+      fmtStats(cfg.stats),
+    { parse_mode: "Markdown" }
+  );
+});
+
 // ---------------- Callback actions ----------------
 
 bot.action("back_main", async (ctx) => {
@@ -134,6 +147,14 @@ bot.action("set_maxsize", async (ctx) => {
   await ctx.reply("📏 Send max file size in MB (e.g. 2000), or send `0` for no limit:", { parse_mode: "Markdown" });
 });
 
+bot.action("set_dailylimit", async (ctx) => {
+  pendingInput = "dailylimit";
+  await ctx.reply(
+    "🌙 Send max items to transfer *per day* (e.g. 200) to keep the account safe, or send `0` for no limit:",
+    { parse_mode: "Markdown" }
+  );
+});
+
 bot.on("text", async (ctx) => {
   if (!pendingInput) return; // ignore stray text
   const cfg = state.load();
@@ -179,6 +200,14 @@ bot.on("text", async (ctx) => {
     cfg.maxSizeMB = n > 0 ? n : null;
     state.save(cfg);
     await ctx.reply(`✅ Max size set to: ${cfg.maxSizeMB ? cfg.maxSizeMB + " MB" : "no limit"}`, mainMenu());
+  } else if (pendingInput === "dailylimit") {
+    const n = parseInt(value, 10);
+    cfg.dailyLimit = n > 0 ? n : null;
+    state.save(cfg);
+    await ctx.reply(
+      `✅ Daily limit set to: ${cfg.dailyLimit ? cfg.dailyLimit + " items/day" : "no limit"}`,
+      mainMenu()
+    );
   }
   pendingInput = null;
 });
@@ -250,10 +279,10 @@ bot.action("start_transfer", async (ctx) => {
 
   engine
     .startTransfer({
-      onProgress: async (stats, total) => {
+      onProgress: async (stats, total, eta) => {
         const text = `⏳ *Transferring...*\n\nSent: ${stats.sent}\nSkipped: ${
           stats.skippedByType + stats.skippedBySize + stats.skippedTextFile
-        }\nFailed: ${stats.failed}\nDuplicates: ${stats.duplicates}`;
+        }\nFailed: ${stats.failed}\nDuplicates: ${stats.duplicates}${eta ? `\n⏱ ETA: ${eta}` : ""}`;
         try {
           if (lastEditMsg) {
             await ctx.telegram.editMessageText(ctx.chat.id, lastEditMsg, undefined, text, { parse_mode: "Markdown" });
@@ -285,7 +314,7 @@ bot.action("pause_transfer", async (ctx) => {
   if (cfg.status !== "running") return ctx.reply("⚠️ Nothing is running.");
   cfg.status = "paused";
   state.save(cfg);
-  await ctx.reply("⏸ Paused. Press Resume to continue.");
+  await ctx.reply("⏸ Paused. You can change 🚦 Speed now if you want — Resume will use the new speed.", mainMenu());
 });
 
 bot.action("resume_transfer", async (ctx) => {
