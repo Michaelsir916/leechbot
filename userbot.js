@@ -108,6 +108,9 @@ async function getPreview(cfg) {
       counts[classified.type] = (counts[classified.type] || 0) + 1;
     }
   }
+  cfg.previewTotal = counts.total;
+  cfg.previewAt = new Date().toISOString();
+  state.save(cfg);
   return counts;
 }
 
@@ -121,18 +124,22 @@ async function startTransfer(hooks = {}) {
   if (!cfg.stats.startedAt) cfg.stats.startedAt = new Date().toISOString();
   state.save(cfg);
 
-  const delay = SPEED_DELAYS[cfg.speed] || SPEED_DELAYS.normal;
+  hooks.onLog && hooks.onLog("🔍 Scanning message history (this can take a bit for large channels)...");
 
-  // Collect messages older than or equal to resume point, oldest-first for natural order
-  const allMessages = [];
-  const iterOpts = { limit: undefined, reverse: true }; // oldest to newest
+  const iterOpts = { reverse: true }; // oldest to newest
   if (cfg.lastProcessedMsgId) iterOpts.minId = cfg.lastProcessedMsgId;
 
-  for await (const msg of tg.iterMessages(cfg.sourceChannel, iterOpts)) {
-    allMessages.push(msg);
-  }
+  let scanned = 0;
+  let lastHeartbeat = Date.now();
+  let lastProgressEmit = Date.now();
 
-  for (const msg of allMessages) {
+  for await (const msg of tg.iterMessages(cfg.sourceChannel, iterOpts)) {
+    scanned++;
+    // heartbeat every 5s while just scanning, so it never looks frozen
+    if (Date.now() - lastHeartbeat > 5000) {
+      hooks.onLog && hooks.onLog(`🔍 Scanned ${scanned} messages so far...`);
+      lastHeartbeat = Date.now();
+    }
     // check pause/stop before each item
     const liveState = state.load();
     if (liveState.status === "stopped") {
@@ -142,7 +149,7 @@ async function startTransfer(hooks = {}) {
       return;
     }
     if (liveState.status === "paused") {
-      // wait loop until resumed or stopped
+      // wait loop until resumed or stopped - also lets speed be changed while paused
       while (true) {
         await sleep(2000);
         const check = state.load();
@@ -153,6 +160,9 @@ async function startTransfer(hooks = {}) {
         }
       }
     }
+
+    // Re-read speed each iteration so changing it mid-run (paused or not) takes effect immediately
+    const liveSpeed = SPEED_DELAYS[state.load().speed] || SPEED_DELAYS.normal;
 
     const classified = classifyMessage(msg);
     const verdict = classifyAndFilter(classified, cfg);
@@ -189,10 +199,47 @@ async function startTransfer(hooks = {}) {
       continue;
     }
 
+    // ---- Daily quota guard (account safety) ----
+    const today = new Date().toISOString().slice(0, 10);
+    if (cfg.dailyDate !== today) {
+      cfg.dailyDate = today;
+      cfg.dailyCount = 0;
+      state.save(cfg);
+    }
+    if (cfg.dailyLimit && cfg.dailyCount >= cfg.dailyLimit) {
+      hooks.onLog &&
+        hooks.onLog(
+          `🌙 Daily limit of ${cfg.dailyLimit} reached. Pausing until tomorrow to keep the account safe...`
+        );
+      cfg.status = "paused";
+      state.save(cfg);
+      while (true) {
+        await sleep(60 * 1000);
+        const check = state.load();
+        if (check.status === "stopped") {
+          hooks.onDone && hooks.onDone(check.stats);
+          return;
+        }
+        const nowDate = new Date().toISOString().slice(0, 10);
+        if (nowDate !== check.dailyDate) {
+          check.dailyDate = nowDate;
+          check.dailyCount = 0;
+          check.status = "running";
+          state.save(check);
+          hooks.onLog && hooks.onLog("🌅 New day - resuming transfer automatically.");
+          cfg.dailyDate = nowDate;
+          cfg.dailyCount = 0;
+          break;
+        }
+        if (check.status === "running") break; // manually resumed by user
+      }
+    }
+
     // Attempt send with FloodWait handling + retry
     try {
       await sendMediaCaptionFree(tg, cfg.targetChannel, msg);
       cfg.stats.sent++;
+      cfg.dailyCount++;
       if (uniqueId) cfg.sentFileHashes.push(uniqueId);
     } catch (err) {
       if (err.errorMessage === "FLOOD" || /FLOOD_WAIT/.test(err.message || "")) {
@@ -203,6 +250,7 @@ async function startTransfer(hooks = {}) {
         try {
           await sendMediaCaptionFree(tg, cfg.targetChannel, msg);
           cfg.stats.sent++;
+          cfg.dailyCount++;
           if (uniqueId) cfg.sentFileHashes.push(uniqueId);
         } catch (err2) {
           cfg.stats.failed++;
@@ -216,10 +264,18 @@ async function startTransfer(hooks = {}) {
 
     cfg.lastProcessedMsgId = msg.id;
     state.save(cfg);
-    hooks.onProgress && hooks.onProgress(cfg.stats, allMessages.length);
 
-    await sleep(delay);
+    if (Date.now() - lastProgressEmit >= 5000) {
+      const eta = estimateEta(cfg);
+      hooks.onProgress && hooks.onProgress(cfg.stats, scanned, eta);
+      lastProgressEmit = Date.now();
+    }
+
+    await sleep(liveSpeed);
   }
+
+  // final status push so the last state is always visible even if <5s since last emit
+  hooks.onProgress && hooks.onProgress(cfg.stats, scanned);
 
   cfg.status = "done";
   cfg.stats.finishedAt = new Date().toISOString();
@@ -278,6 +334,21 @@ async function retryFailed(hooks = {}) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function estimateEta(cfg) {
+  if (!cfg.stats.startedAt) return null;
+  const elapsedMin = (Date.now() - new Date(cfg.stats.startedAt).getTime()) / 60000;
+  if (elapsedMin < 0.2) return null; // too early to estimate
+  const doneCount = cfg.stats.sent + cfg.stats.skippedByType + cfg.stats.skippedBySize + cfg.stats.skippedTextFile + cfg.stats.duplicates;
+  if (doneCount === 0) return null;
+  const ratePerMin = doneCount / elapsedMin;
+  if (!cfg.previewTotal || ratePerMin <= 0) return null;
+  const remaining = Math.max(0, cfg.previewTotal - doneCount);
+  const etaMin = remaining / ratePerMin;
+  if (etaMin < 1) return "< 1 min";
+  if (etaMin < 60) return `~${Math.round(etaMin)} min`;
+  return `~${(etaMin / 60).toFixed(1)} hr`;
 }
 
 module.exports = { getClient, getChannelInfo, getPreview, startTransfer, retryFailed };
