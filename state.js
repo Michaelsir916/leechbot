@@ -16,6 +16,11 @@ const DEFAULTS = {
   speed: "normal",          // "slow" | "normal" | "fast"
   maxSizeMB: null,          // null = no limit
   logChannelId: null,
+  dailyLimit: null,         // null = no limit, otherwise max items sent per day (account safety)
+  dailyCount: 0,
+  dailyDate: null,          // "YYYY-MM-DD" - resets dailyCount when this changes
+  previewTotal: null,       // total media count from last Preview, used for ETA estimate
+  previewAt: null,
 
   // run-time / resume data
   status: "idle",           // "idle" | "running" | "paused" | "stopped" | "done"
