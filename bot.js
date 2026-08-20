@@ -142,11 +142,38 @@ bot.on("text", async (ctx) => {
   if (pendingInput === "source") {
     cfg.sourceChannel = value;
     state.save(cfg);
-    await ctx.reply(`✅ Source channel set to: ${value}`, mainMenu());
+    pendingInput = null;
+    await ctx.reply(`✅ Source set to: ${value}\n🔎 Checking channel name...`);
+    try {
+      const info = await engine.getChannelInfo(value);
+      await ctx.reply(
+        `📡 *Source channel confirmed:*\n${info.title}${info.username ? " (" + info.username + ")" : ""}${
+          info.participantsCount ? "\n👥 " + info.participantsCount + " members" : ""
+        }\n\n⚠️ Is this the RIGHT channel? If not, set it again.`,
+        { parse_mode: "Markdown", ...mainMenu() }
+      );
+    } catch (err) {
+      await ctx.reply(
+        `❌ Couldn't find that channel: ${err.message}\n\nCheck the ID/username and that your userbot account is a member.`,
+        mainMenu()
+      );
+    }
+    return;
   } else if (pendingInput === "target") {
     cfg.targetChannel = value;
     state.save(cfg);
-    await ctx.reply(`✅ Target set to: ${value}`, mainMenu());
+    pendingInput = null;
+    await ctx.reply(`✅ Target set to: ${value}\n🔎 Checking channel name...`);
+    try {
+      const info = await engine.getChannelInfo(value);
+      await ctx.reply(
+        `🎯 *Target confirmed:*\n${info.title}${info.username ? " (" + info.username + ")" : ""}\n\n⚠️ Is this the RIGHT target? If not, set it again.`,
+        { parse_mode: "Markdown", ...mainMenu() }
+      );
+    } catch (err) {
+      await ctx.reply(`❌ Couldn't find that target: ${err.message}`, mainMenu());
+    }
+    return;
   } else if (pendingInput === "maxsize") {
     const n = parseInt(value, 10);
     cfg.maxSizeMB = n > 0 ? n : null;
@@ -162,8 +189,10 @@ bot.action("preview", async (ctx) => {
   await ctx.reply("🔍 Scanning source channel, this may take a moment...");
   try {
     const counts = await engine.getPreview(cfg);
+    const info = counts.channelInfo;
     await ctx.reply(
       `👁 *Preview*\n\n` +
+        `📡 Channel: *${info.title}*${info.username ? " (" + info.username + ")" : ""}\n\n` +
         `Photos: ${counts.photo}\n` +
         `Videos: ${counts.video}\n` +
         `GIFs: ${counts.gif}\n` +
@@ -197,8 +226,19 @@ bot.action("start_transfer", async (ctx) => {
   }
   if (transferRunning) return ctx.reply("🟢 Transfer already running.");
 
+  let sourceLabel = cfg.sourceChannel;
+  let targetLabel = cfg.targetChannel;
+  try {
+    const srcInfo = await engine.getChannelInfo(cfg.sourceChannel);
+    sourceLabel = `${srcInfo.title}${srcInfo.username ? " (" + srcInfo.username + ")" : ""}`;
+  } catch (e) {}
+  try {
+    const tgtInfo = await engine.getChannelInfo(cfg.targetChannel);
+    targetLabel = `${tgtInfo.title}${tgtInfo.username ? " (" + tgtInfo.username + ")" : ""}`;
+  } catch (e) {}
+
   await ctx.reply(
-    `🚀 *Confirm Transfer*\n\nSource: ${cfg.sourceChannel}\nTarget: ${cfg.targetChannel}\nSpeed: ${cfg.speed}\n\nStarting now...`,
+    `🚀 *Confirm Transfer*\n\nSource: ${sourceLabel}\nTarget: ${targetLabel}\nSpeed: ${cfg.speed}\n\nStarting now...`,
     { parse_mode: "Markdown" }
   );
 
