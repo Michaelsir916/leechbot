@@ -79,10 +79,24 @@ function passesFilters(classified, cfg) {
   return "ok";
 }
 
+// Fetch basic info (title, username) about a channel/chat.
+async function getChannelInfo(idOrUsername) {
+  const tg = await getClient();
+  const entity = await tg.getEntity(idOrUsername);
+  return {
+    title: entity.title || entity.username || String(entity.id),
+    username: entity.username ? "@" + entity.username : null,
+    id: entity.id ? entity.id.toString() : null,
+    participantsCount: entity.participantsCount || null,
+  };
+}
+
 // Scan the source channel and build counts without sending anything (for preview).
 async function getPreview(cfg) {
   const tg = await getClient();
   const counts = { photo: 0, video: 0, gif: 0, document: 0, textfile_excluded: 0, total: 0 };
+  const info = await getChannelInfo(cfg.sourceChannel);
+  counts.channelInfo = info;
 
   for await (const msg of tg.iterMessages(cfg.sourceChannel, { limit: 5000 })) {
     const classified = classifyMessage(msg);
@@ -266,4 +280,4 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { getClient, getPreview, startTransfer, retryFailed };
+module.exports = { getClient, getChannelInfo, getPreview, startTransfer, retryFailed };
