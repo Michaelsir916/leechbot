@@ -9,9 +9,14 @@ const OWNER_ID = parseInt(process.env.OWNER_ID, 10);
 const bot = new Telegraf(BOT_TOKEN);
 
 // ---- Owner-only guard ----
+// IMPORTANT: this bot must NEVER post into the source/target channel, even errors.
+// So it only ever processes/replies in a private DM with the owner. Everything else
+// (channel_post, group messages, other users) is silently ignored - no reply sent at all.
 bot.use((ctx, next) => {
-  if (ctx.from && ctx.from.id === OWNER_ID) return next();
-  return ctx.reply("🚫 This bot is private.");
+  const isPrivate = ctx.chat && ctx.chat.type === "private";
+  const isOwner = ctx.from && ctx.from.id === OWNER_ID;
+  if (isPrivate && isOwner) return next();
+  return; // silent ignore, no message sent anywhere
 });
 
 // Track a "pending text input" per step (e.g. waiting for source channel input)
