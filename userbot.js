@@ -119,13 +119,47 @@ function passesFilters(classified, cfg) {
 
 async function getChannelInfo(idOrUsername) {
   const tg = await getClient();
-  const entity = await tg.getEntity(idOrUsername);
+  let entity;
+  try {
+    entity = await tg.getEntity(idOrUsername);
+  } catch (err) {
+    // A bare numeric ID (no username/link) can only resolve if its
+    // access_hash is already in GramJS's in-memory cache. Warm the
+    // cache with getDialogs() and retry once before giving up.
+    if (/^-?\d+$/.test(String(idOrUsername).trim())) {
+      await tg.getDialogs({ limit: 300 });
+      entity = await tg.getEntity(idOrUsername);
+    } else {
+      throw err;
+    }
+  }
   return {
     title: entity.title || entity.username || String(entity.id),
     username: entity.username ? "@" + entity.username : null,
     id: entity.id ? entity.id.toString() : null,
+    // Save this alongside the id — it's what lets us resolve the channel
+    // reliably later (e.g. after a bot restart) without depending on
+    // GramJS's in-memory entity cache still being warm.
+    accessHash: entity.accessHash ? entity.accessHash.toString() : null,
     participantsCount: entity.participantsCount || null,
   };
+}
+
+// Build a resolvable peer from saved id + accessHash instead of relying on
+// the live entity cache. This is what actually fixes "all sends fail"
+// after a restart / idle period — sendFile/iterMessages/getMessages can
+// all take this InputPeerChannel directly, no getEntity() lookup needed.
+function resolvedPeer(id, accessHash) {
+  if (!id) return null;
+  if (accessHash) {
+    return new Api.InputPeerChannel({
+      channelId: BigInt(id),
+      accessHash: BigInt(accessHash),
+    });
+  }
+  // No accessHash saved (old state from before this fix) — fall back to
+  // the bare id, which only works if the entity is still cache-warm.
+  return id;
 }
 
 async function getPreview(cfg) {
@@ -134,7 +168,8 @@ async function getPreview(cfg) {
   const info = await getChannelInfo(cfg.sourceChannel);
   counts.channelInfo = info;
 
-  for await (const msg of tg.iterMessages(cfg.sourceChannel, { limit: 5000 })) {
+  const sourcePeer = resolvedPeer(cfg.sourceChannel, cfg.sourceChannelAccessHash);
+  for await (const msg of tg.iterMessages(sourcePeer, { limit: 5000 })) {
     const classified = classifyMessage(msg);
     if (!classified) continue;
     counts.total++;
@@ -167,7 +202,10 @@ async function startTransfer(hooks = {}) {
   const iterOpts = { reverse: true };
   if (cfg.lastProcessedMsgId) iterOpts.minId = cfg.lastProcessedMsgId;
 
-  for await (const msg of tg.iterMessages(cfg.sourceChannel, iterOpts)) {
+  const sourcePeer = resolvedPeer(cfg.sourceChannel, cfg.sourceChannelAccessHash);
+  const targetPeer = resolvedPeer(cfg.targetChannel, cfg.targetChannelAccessHash);
+
+  for await (const msg of tg.iterMessages(sourcePeer, iterOpts)) {
     scanned++;
     
     // ============ UPDATE STATUS MESSAGE (NO SPAM) ============
@@ -279,7 +317,7 @@ async function startTransfer(hooks = {}) {
 
     // Send with flood handling
     try {
-      await sendMediaCaptionFree(tg, cfg.targetChannel, msg);
+      await sendMediaCaptionFree(tg, targetPeer, msg);
       cfg.stats.sent++;
       cfg.dailyCount++;
       if (uniqueId) cfg.sentFileHashes.push(uniqueId);
@@ -289,7 +327,7 @@ async function startTransfer(hooks = {}) {
         hooks.onLog?.(`⏳ FloodWait: sleeping ${waitSec}s`);
         await sleep((waitSec + 2) * 1000);
         try {
-          await sendMediaCaptionFree(tg, cfg.targetChannel, msg);
+          await sendMediaCaptionFree(tg, targetPeer, msg);
           cfg.stats.sent++;
           cfg.dailyCount++;
           if (uniqueId) cfg.sentFileHashes.push(uniqueId);
@@ -352,15 +390,17 @@ async function retryFailed(hooks = {}) {
   const cfg = state.load();
   const tg = await getClient();
   const stillFailed = [];
+  const sourcePeer = resolvedPeer(cfg.sourceChannel, cfg.sourceChannelAccessHash);
+  const targetPeer = resolvedPeer(cfg.targetChannel, cfg.targetChannelAccessHash);
 
   for (const item of cfg.failedItems) {
     try {
-      const [msg] = await tg.getMessages(cfg.sourceChannel, { ids: [item.msgId] });
+      const [msg] = await tg.getMessages(sourcePeer, { ids: [item.msgId] });
       if (!msg) {
         stillFailed.push(item);
         continue;
       }
-      await sendMediaCaptionFree(tg, cfg.targetChannel, msg);
+      await sendMediaCaptionFree(tg, targetPeer, msg);
       cfg.stats.sent++;
       cfg.stats.failed = Math.max(0, cfg.stats.failed - 1);
     } catch (err) {
