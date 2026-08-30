@@ -8,9 +8,11 @@ const DEFAULTS = {
   sourceChannel: null,
   sourceChannelName: null,
   sourceChannelUsername: null,
+  sourceChannelAccessHash: null,
   targetChannel: null,
   targetChannelName: null,
   targetChannelUsername: null,
+  targetChannelAccessHash: null,
 
   // Archived per-channel progress, keyed by normalized channel id.
   // Lets us "clear" the active source without losing history — if the
