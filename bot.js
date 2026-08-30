@@ -113,6 +113,18 @@ bot.start((ctx) => {
 
 bot.command("menu", (ctx) => ctx.reply("📋 Main Menu", mainMenu()));
 
+bot.command("faillog", async (ctx) => {
+  const cfg = state.load();
+  if (!cfg.failedItems || !cfg.failedItems.length) {
+    return ctx.reply("✅ Failed items ഒന്നും ഇല്ല.");
+  }
+  const sample = cfg.failedItems
+    .slice(-15)
+    .map((f) => `• msg ${f.msgId}: ${f.reason}`)
+    .join("\n");
+  await ctx.reply(`🧾 *Failed items (last 15):*\n${sample}`, { parse_mode: "Markdown" });
+});
+
 bot.command("whereami", async (ctx) => {
   const cfg = state.load();
   const rateInfo = cfg.rateLimit.enabled 
@@ -426,10 +438,12 @@ async function finalizeSourceChange(ctx, info, resetFresh) {
   cfg.sourceChannel = info.id;
   cfg.sourceChannelName = info.title;
   cfg.sourceChannelUsername = info.username;
+  cfg.sourceChannelAccessHash = info.accessHash;
   cfg.recentSourceChannels = state.pushRecent(cfg.recentSourceChannels, {
     id: info.id,
     name: info.title,
     username: info.username,
+    accessHash: info.accessHash,
   });
 
   if (resetFresh) {
@@ -498,10 +512,12 @@ async function handleTargetCandidate(ctx, info) {
   cfg.targetChannel = info.id;
   cfg.targetChannelName = info.title;
   cfg.targetChannelUsername = info.username;
+  cfg.targetChannelAccessHash = info.accessHash;
   cfg.recentTargetChannels = state.pushRecent(cfg.recentTargetChannels, {
     id: info.id,
     name: info.title,
     username: info.username,
+    accessHash: info.accessHash,
   });
   state.save(cfg);
   const detail = `🎯 *${info.title}*${info.username ? " (" + info.username + ")" : ""}\nID: \`${info.id}\``;
@@ -624,8 +640,17 @@ bot.action("start_transfer", async (ctx) => {
       onLog: (msg) => ctx.reply(msg),
       onDone: (stats) => {
         transferRunning = false;
+        const cfg2 = state.load();
+        let failNote = "";
+        if (cfg2.failedItems && cfg2.failedItems.length) {
+          const sample = cfg2.failedItems
+            .slice(-5)
+            .map((f) => `• msg ${f.msgId}: ${f.reason}`)
+            .join("\n");
+          failNote = `\n\n🧾 *Recent failures* (/faillog for more):\n${sample}`;
+        }
         ctx.reply(
-          `✅ *Transfer Complete!*\n\n${fmtStats(stats)}`,
+          `✅ *Transfer Complete!*\n\n${fmtStats(stats)}${failNote}`,
           { parse_mode: "Markdown", ...mainMenu() }
         );
       },
