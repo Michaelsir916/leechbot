@@ -5,7 +5,7 @@
   "main": "bot.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node bot.js",
+    "start": "node --localstorage-file=./localstorage.json bot.js",
     "login": "node login.js"
   },
   "dependencies": {
